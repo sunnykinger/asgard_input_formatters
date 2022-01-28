@@ -4,8 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 
-class CurrencyTextInputFormatter extends TextInputFormatter {
-  CurrencyTextInputFormatter({
+class CurrencyInputFormatter extends TextInputFormatter {
+  CurrencyInputFormatter({
     this.locale,
     this.name,
     this.symbol,
