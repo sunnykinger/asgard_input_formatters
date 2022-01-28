@@ -3,64 +3,153 @@ import 'dart:math';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
-import '../utils/utils.dart';
 
-class CurrencyInputFormatter extends TextInputFormatter {
-  final int decimalPlaces;
-  final bool allowNegative;
-  final String locale;
-  final String symbol;
+class CurrencyTextInputFormatter extends TextInputFormatter {
+  CurrencyTextInputFormatter({
+    this.locale,
+    this.name,
+    this.symbol,
+    this.decimalDigits,
+    this.customPattern,
+    this.turnOffGrouping = false,
+  });
 
-  final NumberFormat _formatter;
+  /// Defaults `locale` is null.
+  ///
+  /// Put 'en' or 'es' for locale
+  final String? locale;
 
-  CurrencyInputFormatter({
-    this.decimalPlaces = 2,
-    this.allowNegative = true,
-    required this.locale,
-    required this.symbol,
-  }) : _formatter = NumberFormat.currency(
-          decimalDigits: decimalPlaces,
-          locale: locale,
-          symbol: symbol,
-        );
+  /// Defaults `name` is null.
+  ///
+  /// the currency with that ISO 4217 name will be used.
+  /// Otherwise we will use the default currency name for the current locale.
+  /// If no [symbol] is specified, we will use the currency name in the formatted result.
+  /// e.g. var f = NumberFormat.currency(locale: 'en_US', name: 'EUR') will format currency like "EUR1.23".
+  /// If we did not specify the name, it would format like "USD1.23".
+  final String? name;
+
+  /// Defaults `symbol` is null.
+  ///
+  /// Put '\$' for symbol
+  final String? symbol;
+
+  /// Defaults `decimalDigits` is null.
+  final int? decimalDigits;
+
+  /// Defaults `customPattern` is null.
+  ///
+  /// Can be used to specify a particular format.
+  /// This is useful if you have your own locale data which includes unsupported formats
+  /// (e.g. accounting format for currencies.)
+  final String? customPattern;
+
+  /// Defaults `turnOffGrouping` is false.
+  ///
+  /// Explicitly turn off any grouping (e.g. by thousands) in this format.
+  /// This is used in compact number formatting, where we omit the normal grouping.
+  /// Best to know what you're doing if you call it.
+  final bool turnOffGrouping;
+
+  num _newNum = 0;
+  String _newString = '';
+  bool _isNegative = false;
+
+  void _formatter(String newText) {
+    final NumberFormat format = NumberFormat.currency(
+      locale: locale,
+      name: name,
+      symbol: symbol,
+      decimalDigits: decimalDigits,
+      customPattern: customPattern,
+    );
+    if (turnOffGrouping) {
+      format.turnOffGrouping();
+    }
+
+    _newNum = num.tryParse(newText) ?? 0;
+    if (format.decimalDigits! > 0) {
+      _newNum /= pow(10, format.decimalDigits!);
+    }
+    _newString = (_isNegative ? '-' : '') + format.format(_newNum).trim();
+  }
 
   @override
   TextEditingValue formatEditUpdate(
-      TextEditingValue oldValue, TextEditingValue newValue) {
-    return textManipulation(
-      oldValue,
-      newValue,
-      textInputFormatter: allowNegative
-          ? FilteringTextInputFormatter.allow(RegExp('[0-9-]+'))
-          : FilteringTextInputFormatter.digitsOnly,
-      formatPattern: (String filteredString) {
-        if (allowNegative) {
-          // filter negative sign in the middle
-          // this will also remove redundant negative signs
-          if ('-'.allMatches(filteredString).isNotEmpty) {
-            filteredString = (filteredString.startsWith('-') ? '-' : '') +
-                filteredString.replaceAll('-', '');
-          }
-        }
+      TextEditingValue oldValue,
+      TextEditingValue newValue,
+      ) {
+    // final bool isInsertedCharacter =
+    //     oldValue.text.length + 1 == newValue.text.length &&
+    //         newValue.text.startsWith(oldValue.text);
+    final bool isRemovedCharacter =
+        oldValue.text.length - 1 == newValue.text.length &&
+            oldValue.text.startsWith(newValue.text);
+    // Apparently, Flutter has a bug where the framework calls
+    // formatEditUpdate twice, or even four times, after a backspace press (see
+    // https://github.com/gtgalone/currency_text_input_formatter/issues/11).
+    // However, only the first of these calls has inputs which are consistent
+    // with a character insertion/removal at the end (which is the most common
+    // use case of editing the TextField - the others being insertion/removal
+    // in the middle, or pasting text onto the TextField). This condition
+    // fixes a problem where a character wasn't properly erased after a
+    // backspace press, when this Flutter bug was present. This comes at the
+    // cost of losing insertion/removal in the middle and pasting text.
+    // if (!isInsertedCharacter && !isRemovedCharacter) {
+    //   return oldValue;
+    // }
 
-        if (filteredString.isEmpty) return '';
-        num number;
-        number = int.tryParse(filteredString) ?? 0;
-        if (decimalPlaces > 0) {
-          number /= pow(10, decimalPlaces);
-        }
-        final result = _formatter.format(number);
+    _isNegative = newValue.text.startsWith('-');
+    String newText = newValue.text.replaceAll(RegExp('[^0-9]'), '');
 
-        // Fix the -0+ and similar issues
-        if (allowNegative) {
-          if (filteredString == '-' ||
-              RegExp(r'-0?0+$').hasMatch(filteredString)) {
-            return '-';
-          }
-        }
+    // If the user wants to remove a digit, but the last character of the
+    // formatted text is not a digit (for example, "1,00 €"), we need to remove
+    // the digit manually.
+    if (isRemovedCharacter && !_lastCharacterIsDigit(oldValue.text)) {
+      final int length = newText.length - 1;
+      newText = newText.substring(0, length > 0 ? length : 0);
+    }
 
-        return result;
-      },
+    _formatter(newText);
+
+    if (newText.trim() == '') {
+      return newValue.copyWith(
+        text: _isNegative ? '-' : '',
+        selection: TextSelection.collapsed(offset: _isNegative ? 1 : 0),
+      );
+    } else if (newText == '00' || newText == '000') {
+      return TextEditingValue(
+        text: _isNegative ? '-' : '',
+        selection: TextSelection.collapsed(offset: _isNegative ? 1 : 0),
+      );
+    }
+
+    return TextEditingValue(
+      text: _newString,
+      selection: TextSelection.collapsed(offset: _newString.length),
     );
+  }
+
+  static bool _lastCharacterIsDigit(String text) {
+    final String lastChar = text.substring(text.length - 1);
+    return RegExp('[0-9]').hasMatch(lastChar);
+  }
+
+  /// Get String type value with format such as `$ 2,000.00`
+  String getFormattedValue() {
+    return _newString;
+  }
+
+  /// Get num type value without format such as `2000.00`
+  num getUnformattedValue() {
+    return _isNegative ? (_newNum * -1) : _newNum;
+  }
+
+  /// Method for formatting value.
+  /// You can use initialValue with this method.
+  String format(String value) {
+    _isNegative = value.startsWith('-');
+    final String newText = value.replaceAll(RegExp('[^0-9]'), '');
+    _formatter(newText);
+    return _newString;
   }
 }
